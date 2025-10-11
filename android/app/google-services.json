@@ -1,0 +1,30 @@
+{
+  "project_info": {
+    "project_number": "95857608729",
+    "firebase_url": "https://tes-1-9ee0c-default-rtdb.asia-southeast1.firebasedatabase.app",
+    "project_id": "tes-1-9ee0c",
+    "storage_bucket": "tes-1-9ee0c.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:95857608729:android:672863db4961a88a7d8288",
+        "android_client_info": {
+          "package_name": "com.example.genset_tracker"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyD2DTy7ra69F0t46jsImXDD2PFcFfpcR48"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
