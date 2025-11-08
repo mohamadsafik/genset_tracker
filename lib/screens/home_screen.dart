@@ -1,4 +1,6 @@
+import 'package:cupertino_battery_indicator/cupertino_battery_indicator.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_database/firebase_database.dart';
 import 'package:flutter/material.dart';
 import 'package:genset_tracker/providers/monitoring_provider.dart';
 import 'package:genset_tracker/providers/user_provider.dart';
@@ -9,6 +11,7 @@ import 'package:genset_tracker/screens/history_screen.dart';
 import 'package:provider/provider.dart';
 
 import 'history_screen.dart';
+import 'notification_page.dart';
 
 // --- Placeholder Constants for Design ---
 const Color kDarkBackground = Color(0xFF071025);
@@ -43,8 +46,9 @@ class _HomeScreenState extends State<HomeScreen> {
   // Pages for the Bottom Navigation Bar
   final List<Widget> _pages = [
     const MonitoringView(), // The main redesigned screen
+    NotificationPage(),
     StatistikPemakaianScreen(),
-    ProfileScreen()
+    ProfileScreen(),
   ];
 
   void _onItemTapped(int index) {
@@ -59,6 +63,7 @@ class _HomeScreenState extends State<HomeScreen> {
       backgroundColor: kDarkBackground,
       body: _pages[_selectedIndex],
       bottomNavigationBar: BottomNavigationBar(
+        type: BottomNavigationBarType.fixed,
         backgroundColor: kSurfaceColor,
         selectedItemColor: Colors.white,
         unselectedItemColor: kStandbyColor,
@@ -69,6 +74,11 @@ class _HomeScreenState extends State<HomeScreen> {
             icon: Icon(Icons.home_outlined),
             activeIcon: Icon(Icons.home),
             label: 'Monitor',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.notifications_outlined),
+            activeIcon: Icon(Icons.notifications),
+            label: 'Notifikasi',
           ),
           BottomNavigationBarItem(
             icon: Icon(Icons.show_chart_outlined),
@@ -98,33 +108,33 @@ class MonitoringView extends StatelessWidget {
     final baterai = context.watch<MonitoringProvider>().baterai;
     final user = Provider.of<UserProvider>(context).user;
 
-
     if (monitoring == null || user == null) {
       return const Center(child: CircularProgressIndicator());
     }
     // Default to 'N/A' or 'STANDBY' if data is not ready
-// 1. Ambil data mentah (String & double)
+    // 1. Ambil data mentah (String & double)
     final String timeString = monitoring['time'] as String;
-    final double voltage = monitoring['voltage'] as double;
+    final double voltage = double.parse(monitoring['voltage'].toString());
     final DateTime timeNow = DateTime.now();
 
-// 2. Konversi String Waktu ke DateTime
+    // 2. Konversi String Waktu ke DateTime
     final DateTime lastReadingTime = DateTime.parse(timeString);
 
-// 3. Tentukan batas waktu (5 menit yang lalu)
-    final DateTime fiveMinutesAgo = timeNow.subtract(const Duration(minutes: 5));
+    // 3. Tentukan batas waktu (5 menit yang lalu)
+    final DateTime fiveMinutesAgo = timeNow.subtract(
+      const Duration(minutes: 1),
+    );
 
     final String engineStatus;
 
-// Logika ON/OFF:
-// Genset OFF jika: (Voltase <= 0.0) ATAU (Waktu terakhir lebih lama dari 5 menit yang lalu)
+    // Logika ON/OFF:
+    // Genset OFF jika: (Voltase <= 0.0) ATAU (Waktu terakhir lebih lama dari 5 menit yang lalu)
     if (voltage <= 0.0 || lastReadingTime.isBefore(fiveMinutesAgo)) {
       engineStatus = 'OFF';
     } else {
       engineStatus = 'ON';
     }
     final bool isGensetRunning = engineStatus == 'ON';
-
 
     return CustomScrollView(
       slivers: [
@@ -155,15 +165,18 @@ class MonitoringView extends StatelessWidget {
                 context,
                 isGensetRunning,
                 formatData(monitoring, 'power'),
-                  gas?['persen'].toString()??"",
-                  baterai?['persen'].toString()??""
+                gas?['press_gas'].toString() ?? "",
+                gas?['press_hose'].toString() ?? "",
+                baterai?['persentase'].toString() ?? "",
+                baterai?['temperature'].toString() ?? "",
               ),
               const SizedBox(height: 32),
 
               // 3. Real-time Parameters
               _buildRealtimeParameters(context, monitoring, isGensetRunning),
+              SizedBox(height: 32),
+              GensetHistoryChart(),
               const SizedBox(height: 32),
-
               // 4. Status Card
               _buildStatusCard(context, engineStatus, isGensetRunning),
             ]),
@@ -172,6 +185,7 @@ class MonitoringView extends StatelessWidget {
       ],
     );
   }
+
   String _getGreeting() {
     final hour = DateTime.now().hour;
     if (hour < 12) return 'Good Morning';
@@ -194,16 +208,98 @@ class MonitoringView extends StatelessWidget {
   }
 
   Widget _buildPowerHeader(
-      BuildContext context,
-      bool isGensetRunning,
-      Map<String, dynamic> monitoring,
-      User? user,
-      ) {
+    BuildContext context,
+    bool isGensetRunning,
+    Map<String, dynamic> monitoring,
+    User? user,
+  ) {
     String greeting = _getGreeting();
     String displayName =
-    (user?.displayName != null && user!.displayName!.isNotEmpty)
+        (user?.displayName != null && user!.displayName!.isNotEmpty)
         ? user.displayName!
         : (user?.email ?? '');
+
+    final DatabaseReference dbRef = FirebaseDatabase.instance.ref();
+    Future<void> _handleGensetAction(
+      BuildContext context,
+      bool isGensetRunning,
+    ) async {
+      final messenger = ScaffoldMessenger.of(context);
+
+      // if (!isGensetRunning) {
+      if (isGensetRunning) {
+        // Nyalakan genset
+        await dbRef.child('starter_engine').update({'master_control': 'OFF'});
+        messenger.showSnackBar(
+          const SnackBar(content: Text('Mengirim perintah MATIKAN genset...')),
+        );
+        await dbRef.child('starter_engine').update({'relay': 'OFF'});
+        await Future.delayed(const Duration(seconds: 2));
+
+        // Jika belum nyala setelah 3 detik, reset ke OFF
+        // if (!isGensetRunning) {
+        //   await dbRef.child('starter_engine').update({'relay': 'OFF'});
+        //   messenger.showSnackBar(
+        //     const SnackBar(
+        //       content: Text('Gagal nyala, relay dikembalikan ke OFF'),
+        //     ),
+        //   );
+        // }
+      } else {
+        // Matikan genset
+        await dbRef.child('starter_engine').update({'master_control': 'ON'});
+        messenger.showSnackBar(
+          const SnackBar(content: Text('Mengirim perintah NYALAKAN genset...')),
+        );
+
+        await Future.delayed(const Duration(seconds: 2));
+
+        // Jika belum mati setelah 3 detik, reset ke OFF
+        // if (isGensetRunning) {
+        //   await dbRef.child('starter_engine').update({'relay_off': 'OFF'});
+        //   messenger.showSnackBar(
+        //     const SnackBar(
+        //       content: Text('Gagal mati, relay_off dikembalikan ke OFF'),
+        //     ),
+        //   );
+        // }
+      }
+    }
+
+    void showGensetConfirmDialog(BuildContext context, bool isGensetRunning) {
+      showDialog(
+        context: context,
+        builder: (context) {
+          return AlertDialog(
+            title: Text(
+              isGensetRunning ? 'Matikan Genset?' : 'Nyalakan Genset?',
+              style: const TextStyle(fontWeight: FontWeight.bold),
+            ),
+            content: Text(
+              isGensetRunning
+                  ? 'Pastikan semua beban sudah dilepaskan sebelum mematikan genset.'
+                  : 'Pastikan semua kondisi aman sebelum menyalakan genset.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Batal'),
+              ),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: isGensetRunning ? Colors.red : Colors.green,
+                ),
+                onPressed: () async {
+                  Navigator.pop(context); // tutup popup
+                  _handleGensetAction(context, isGensetRunning);
+                },
+                child: Text(isGensetRunning ? 'Matikan' : 'Nyalakan'),
+              ),
+            ],
+          );
+        },
+      );
+    }
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -218,20 +314,20 @@ class MonitoringView extends StatelessWidget {
                 CircleAvatar(
                   radius: 20,
                   backgroundColor: Colors.blueGrey.shade700,
-                  backgroundImage: (user?.photoURL != null && user!.photoURL!.isNotEmpty)
+                  backgroundImage:
+                      (user?.photoURL != null && user!.photoURL!.isNotEmpty)
                       ? NetworkImage(user.photoURL!)
                       : null, // kalau null, tampilkan inisial
                   child: (user?.photoURL == null || user!.photoURL!.isEmpty)
                       ? Text(
-                    _getInitialsFromEmail(user?.email ?? ''),
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  )
+                          _getInitialsFromEmail(user?.email ?? ''),
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        )
                       : null,
                 ),
-
 
                 const SizedBox(width: 10),
                 Column(
@@ -247,7 +343,11 @@ class MonitoringView extends StatelessWidget {
                           ),
                         ),
                         const SizedBox(width: 6),
-                        const Icon(Icons.wifi, size: 14, color: Colors.greenAccent),
+                        const Icon(
+                          Icons.wifi,
+                          size: 14,
+                          color: Colors.greenAccent,
+                        ),
                       ],
                     ),
                     Text(
@@ -269,22 +369,40 @@ class MonitoringView extends StatelessWidget {
               children: [
                 if (isGensetRunning)
                   _buildPulsingGlow(kRunningColor), // efek glow animasi
-                Container(
-                  width: 48,
-                  height: 48,
-                  decoration: BoxDecoration(
-                    color: isGensetRunning ? kRunningColor : kStandbyColor,
-                    shape: BoxShape.circle,
-                    boxShadow: [
-                      if (isGensetRunning)
-                        BoxShadow(
-                          color: kRunningColor.withOpacity(0.5),
-                          blurRadius: 15,
-                          spreadRadius: 2,
-                        ),
-                    ],
+                InkWell(
+                  onTap: () async {
+                    final snap = await dbRef
+                        .child('starter_engine/master_control')
+                        .get();
+                    final masterControl = snap.value?.toString() ?? 'OFF';
+
+                    showGensetConfirmDialog(
+                      // ignore: use_build_context_synchronously
+                      context,
+                      (masterControl == "ON") ? true : false,
+                    );
+                  },
+                  child: Container(
+                    width: 48,
+                    height: 48,
+                    decoration: BoxDecoration(
+                      color: isGensetRunning ? kRunningColor : kStandbyColor,
+                      shape: BoxShape.circle,
+                      boxShadow: [
+                        if (isGensetRunning)
+                          BoxShadow(
+                            color: kRunningColor.withOpacity(0.5),
+                            blurRadius: 15,
+                            spreadRadius: 2,
+                          ),
+                      ],
+                    ),
+                    child: Icon(
+                      Icons.power_settings_new,
+                      color: Colors.white,
+                      size: 24,
+                    ),
                   ),
-                  child: const Icon(Icons.bolt, color: Colors.white),
                 ),
                 Positioned(
                   bottom: -18,
@@ -316,15 +434,12 @@ class MonitoringView extends StatelessWidget {
             children: [
               const Text(
                 'Status Terakhir:',
-                style: TextStyle(
-                  color: Colors.grey,
-                  fontSize: 13,
-                ),
+                style: TextStyle(color: Colors.grey, fontSize: 13),
               ),
               Row(
                 children: [
                   Text(
-                    monitoring['time'].toString().split(' ')[1]??'',
+                    monitoring['time'].toString().split(' ')[1] ?? '',
                     style: TextStyle(
                       color: isGensetRunning ? Colors.greenAccent : Colors.grey,
                       fontSize: 13,
@@ -333,8 +448,10 @@ class MonitoringView extends StatelessWidget {
                   ),
                   const SizedBox(width: 8),
                   Container(
-                    padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 3,
+                    ),
                     decoration: BoxDecoration(
                       color: Colors.black,
                       borderRadius: BorderRadius.circular(8),
@@ -382,18 +499,17 @@ class MonitoringView extends StatelessWidget {
     );
   }
 
-
-
-
   Widget _buildPowerFlowDiagram(
     BuildContext context,
     bool isGensetRunning,
     String powerValue,
-      String gasValue,
-      String batteryValue ,
+    String gasValue,
+    String hoseGase,
+    String batteryValue,
+    String TempBattery,
   ) {
     // A simplified diagram using Column and Row
-    const double nodeSize = 70;
+    const double nodeSize = 86;
     const TextStyle nodeTextStyle = TextStyle(
       color: Colors.white,
       fontSize: 10,
@@ -401,10 +517,11 @@ class MonitoringView extends StatelessWidget {
 
     // Node A: Source (Gas)
     Widget gasNode = _buildFlowCircle(
-      'Gas\n$gasValue%',
-      Colors.orange,
+      'Gas\n$gasValue psi\n$hoseGase hose psi',
+      kAccentColor,
       nodeSize,
       nodeTextStyle,
+      Image.asset('assets/images/gas.png', height: 22),
     );
 
     // Node B: Generator (Center)
@@ -413,20 +530,31 @@ class MonitoringView extends StatelessWidget {
       kAccentColor,
       nodeSize,
       nodeTextStyle,
+      Icon(
+        Icons.flash_on,
+        color: isGensetRunning ? Colors.yellow : Colors.grey,
+      ),
     );
 
     // Node C: Storage (Baterai) - In image, it connects to Generator
     Widget batteryNode = _buildFlowCircle(
-      'Baterai\n$batteryValue%',
+      'Baterai\n$batteryValue%\n$TempBattery°C',
       kAccentColor,
       nodeSize,
       nodeTextStyle,
+      BatteryIndicator(
+        value: (double.parse(batteryValue) / 100),
+        barColor: Colors.green,
+        trackBorderColor: Colors.white,
+      ),
+      // Text(batteryValue),
     );
 
     // Node D: Load (Bottom)
     Widget loadNode = Container(
-      width: nodeSize + 20,
-      height: nodeSize - 19,
+      // padding: EdgeInsetsGeometry.symmetric(horizontal: 12, vertical: 12),
+      width: nodeSize + 40,
+      height: nodeSize - 0,
       decoration: BoxDecoration(
         color: kSurfaceColor,
         borderRadius: BorderRadius.circular(8),
@@ -435,7 +563,10 @@ class MonitoringView extends StatelessWidget {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const Icon(Icons.power_settings_new, color: Colors.white, size: 20),
+            Icon(
+              Icons.home_rounded,
+              color: isGensetRunning ? Colors.red : Colors.grey,
+            ),
             Text('Load', style: nodeTextStyle),
             Text(
               powerValue,
@@ -497,6 +628,7 @@ class MonitoringView extends StatelessWidget {
     Color color,
     double size,
     TextStyle style,
+    Widget widget,
   ) {
     return Container(
       width: size,
@@ -506,8 +638,14 @@ class MonitoringView extends StatelessWidget {
         shape: BoxShape.circle,
         border: Border.all(color: color, width: 2),
       ),
-      child: Center(
-        child: Text(text, textAlign: TextAlign.center, style: style),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          widget,
+          Center(
+            child: Text(text, textAlign: TextAlign.center, style: style),
+          ),
+        ],
       ),
     );
   }
@@ -563,11 +701,9 @@ class MonitoringView extends StatelessWidget {
                 isGensetRunning,
                 includeUnit: false,
               ),
-
             ],
           ),
         ),
-        GensetHistoryChart(),
       ],
     );
   }

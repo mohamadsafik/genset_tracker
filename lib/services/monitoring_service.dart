@@ -10,6 +10,7 @@ class MonitoringService {
     }
     return null;
   }
+
   Future<Map<String, dynamic>?> getBattery() async {
     DatabaseEvent event = await _db.child('baterai').once();
     if (event.snapshot.exists) {
@@ -17,6 +18,7 @@ class MonitoringService {
     }
     return null;
   }
+
   Future<Map<String, dynamic>?> getGas() async {
     DatabaseEvent event = await _db.child('gas').once();
     if (event.snapshot.exists) {
@@ -31,12 +33,14 @@ class MonitoringService {
       onData(monitoring);
     });
   }
+
   void listenGas(void Function(Map<String, dynamic>) onData) {
     _db.child('gas').onValue.listen((event) {
       final monitoring = Map<String, dynamic>.from(event.snapshot.value as Map);
       onData(monitoring);
     });
   }
+
   void listenBattery(void Function(Map<String, dynamic>) onData) {
     _db.child('baterai').onValue.listen((event) {
       final monitoring = Map<String, dynamic>.from(event.snapshot.value as Map);

@@ -8,100 +8,157 @@ class GensetHistoryChart extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Ambil waktu saat ini dan 10 menit yang lalu.
+    // Ini sudah benar untuk mengambil 10 data terbaru dalam 10 menit.
+    final today = DateTime.now();
+    final tenMinutesAgo = today.subtract(const Duration(minutes: 10));
+
+    // ⭐️ Stream data dari Firestore:
+    // Query ini sudah efisien: terbaru (descending), dibatasi 10, dalam 10 menit terakhir.
     return StreamBuilder<QuerySnapshot>(
       stream: FirebaseFirestore.instance
           .collection('genset_history')
-          .orderBy('Time', descending: false) // urut dari lama ke baru
-          .limit(10)
+          .where(
+            'CreatedAt',
+            isGreaterThanOrEqualTo: Timestamp.fromDate(tenMinutesAgo),
+          )
+          .where('CreatedAt', isLessThanOrEqualTo: Timestamp.fromDate(today))
+          .orderBy('CreatedAt', descending: true)
+          .limit(5) // 🔹 batasi hanya 10 data terbaru
           .snapshots(),
       builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.waiting) {
+        if (!snapshot.hasData) {
           return const Center(child: CircularProgressIndicator());
         }
+
         if (snapshot.hasError) {
-          return Center(child: Column(
-            children: [
-              SizedBox(height: 16),
-              Text('Error: ${snapshot.error}'),
-            ],
-          ));
+          return Center(
+            child: Column(
+              children: [
+                const SizedBox(height: 16),
+                Text(
+                  'Error: ${snapshot.error}',
+                  style: const TextStyle(color: Colors.red),
+                ),
+              ],
+            ),
+          );
         }
 
-        // Langkah 2: Cek apakah ada dokumen
-        // Gunakan final data = snapshot.data! untuk memudahkan
         final data = snapshot.data!;
 
-        if (data.docs.isEmpty) { // <-- PERIKSA INI
-          return Column(
+        if (data.docs.isEmpty) {
+          return const Column(
             children: [
               SizedBox(height: 16),
-              const Center(
-                child: Text('Belum ada data history yang tersedia.',
-                    style: TextStyle(color: Colors.white70)),
+              Center(
+                child: Text(
+                  'Belum ada data history yang tersedia.',
+                  style: TextStyle(color: Colors.white70),
+                ),
               ),
             ],
           );
         }
 
-        final docs = snapshot.data!.docs;
+        // Balik list agar data diurutkan dari lama (kiri) ke baru (kanan)
+        final docs = data.docs.reversed.toList();
+
         final voltageSpots = <FlSpot>[];
         final freqSpots = <FlSpot>[];
         final currentSpots = <FlSpot>[];
         final timeLabels = <String>[];
 
+        double minTimestamp = -1;
+
+        // ⭐️ Memproses data untuk FlSpot
         for (int i = 0; i < docs.length; i++) {
-          final data = docs[i].data() as Map<String, dynamic>;
-          final voltage = (data['Voltage'] ?? 0).toDouble();
-          final freq = (data['Frequency'] ?? 0).toDouble();
-          final current = (data['Current'] ?? 0).toDouble();
+          final dataMap = docs[i].data() as Map<String, dynamic>;
 
-          final timeString = data['Time']?.toString() ?? '';
-          DateTime date;
+          // Konversi nilai ke double dengan aman
+          final voltage = (dataMap['Voltage'] as num? ?? 0).toDouble();
+          final freq = (dataMap['Frequency'] as num? ?? 0).toDouble();
+          final current = (dataMap['Current'] as num? ?? 0).toDouble();
 
-          try {
-            date = DateFormat("yyyy-MM-dd HH:mm:ss").parse(timeString);
-          } catch (e) {
-            date = DateTime.now().subtract(Duration(minutes: docs.length - i));
+          final timestampValue = dataMap['CreatedAt'] as Timestamp?;
+          if (timestampValue == null) continue; // Skip jika CreatedAt null
+
+          final DateTime date = timestampValue.toDate();
+
+          final double timestamp = date.millisecondsSinceEpoch.toDouble();
+
+          if (minTimestamp == -1 || timestamp < minTimestamp) {
+            minTimestamp = timestamp;
           }
 
-          voltageSpots.add(FlSpot(i.toDouble(), voltage));
-          freqSpots.add(FlSpot(i.toDouble(), freq));
-          currentSpots.add(FlSpot(i.toDouble(), current));
-          timeLabels.add(DateFormat.Hm().format(date)); // 19:06, 19:11, dst
+          // Normalisasi X axis: waktu relatif terhadap waktu data pertama
+          final double normalizedX = timestamp - minTimestamp;
+
+          voltageSpots.add(FlSpot(normalizedX, voltage));
+          freqSpots.add(FlSpot(normalizedX, freq));
+          currentSpots.add(FlSpot(normalizedX, current));
+          timeLabels.add(DateFormat.Hm().format(date));
         }
+
+        final double minX = voltageSpots.isNotEmpty ? voltageSpots.first.x : 0;
+        final double maxX = voltageSpots.isNotEmpty ? voltageSpots.last.x : 1;
+
+        // Ambil nilai real-time dari dokumen TERAKHIR (sudah dibalik, jadi ini index terakhir)
+        final lastDocData = docs.last.data() as Map<String, dynamic>;
+
+        final lastVoltage = (lastDocData['Voltage'] as num? ?? 0)
+            .toDouble()
+            .toStringAsFixed(1);
+        final lastFrequency = (lastDocData['Frequency'] as num? ?? 0)
+            .toDouble()
+            .toStringAsFixed(1);
+        final lastCurrent = (lastDocData['Current'] as num? ?? 0)
+            .toDouble()
+            .toStringAsFixed(2);
 
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text("Grafik Parameter Real-time",
-                style: TextStyle(color: Colors.white, fontSize: 16)),
+            const Text(
+              "Grafik Parameter Real-time",
+              style: TextStyle(color: Colors.white, fontSize: 16),
+            ),
             const SizedBox(height: 12),
 
             // 🔵 Tegangan
             _buildChartCard(
+              key: const ValueKey('VoltageChart'),
               title: 'Tegangan',
-              value: '${voltageSpots.last.y.toStringAsFixed(1)} V',
+              value: '$lastVoltage V',
               color: Colors.blueAccent,
               spots: voltageSpots,
               labels: timeLabels,
+              minX: minX,
+              maxX: maxX,
             ),
 
             // 🟡 Frekuensi
             _buildChartCard(
+              key: const ValueKey('FrequencyChart'),
               title: 'Frekuensi',
-              value: '${freqSpots.last.y.toStringAsFixed(1)} Hz',
+              value: '$lastFrequency Hz',
               color: Colors.orangeAccent,
               spots: freqSpots,
               labels: timeLabels,
+              minX: minX,
+              maxX: maxX,
             ),
 
             // 🔴 Arus
             _buildChartCard(
+              key: const ValueKey('CurrentChart'),
               title: 'Arus',
-              value: '${currentSpots.last.y.toStringAsFixed(2)} A',
+              value: '$lastCurrent A',
               color: Colors.redAccent,
               spots: currentSpots,
               labels: timeLabels,
+              minX: minX,
+              maxX: maxX,
             ),
           ],
         );
@@ -109,26 +166,97 @@ class GensetHistoryChart extends StatelessWidget {
     );
   }
 
+  // --- Fungsi _buildChartCard (dengan PERBAIKAN Y-AXIS) ---
+
   Widget _buildChartCard({
+    Key? key,
     required String title,
     required String value,
     required Color color,
     required List<FlSpot> spots,
     required List<String> labels,
+    required double minX,
+    required double maxX,
   }) {
-    // Hitung nilai min/max Y untuk menentukan skala chart
-    final double maxY = spots.isEmpty ? 10.0 : spots.map((spot) => spot.y).reduce((a, b) => a > b ? a : b) * 1.1;
-    final double minY = spots.isEmpty ? 0.0 : spots.map((spot) => spot.y).reduce((a, b) => a < b ? a : b) * 0.9;
+    if (spots.isEmpty) {
+      return Container(key: key);
+    }
 
-    // Tentukan interval Y. Disini saya ambil 4 interval utama.
-    final double yInterval = (maxY - minY) / 4;
-    final double chartMaxY = maxY + (maxY * 0.05);
-    final double chartMinY = minY - (minY * 0.05).clamp(0, 1);
+    // Logika Skala Y
+    final double maxY = spots
+        .map((spot) => spot.y)
+        .reduce((a, b) => a > b ? a : b);
+    final double minY = spots
+        .map((spot) => spot.y)
+        .reduce((a, b) => a < b ? a : b);
 
-    // Tentukan interval X (untuk bottomTitles)
-    final double interval = 1.0;
+    double yInterval;
+    double chartMaxY;
+    double chartMinY;
+
+    // ⭐ LOGIKA PERBAIKAN UTAMA Y-AXIS
+    // Menghitung rentang data
+    final double dataRange = maxY - minY;
+
+    if (dataRange < 0.1) {
+      // Menangani kasus data rata (Flatline) atau range sangat kecil
+      // Jika data rata, kita buat rentang 2.0 atau 0.2
+      double padding = (maxY < 1.0) ? 0.1 : 1.0;
+
+      chartMaxY = maxY + padding;
+      chartMinY = minY >= padding ? minY - padding : 0.0;
+
+      // Menentukan interval yang lebih baik
+      if (maxY >= 50) {
+        yInterval = 5.0;
+      } else if (maxY >= 5) {
+        yInterval = 1.0;
+      } else {
+        yInterval = 0.5;
+      }
+
+      // Membulatkan batas chart agar menjadi kelipatan yInterval
+      chartMaxY = (chartMaxY / yInterval).ceil() * yInterval;
+      chartMinY = (chartMinY / yInterval).floor() * yInterval;
+      if (chartMinY < 0) chartMinY = 0; // Pastikan tidak negatif
+    } else {
+      // Logika untuk data yang bervariasi
+      // Menjaga rentang sekitar 10% dari rentang data
+      double buffer = dataRange * 0.10;
+      yInterval = (dataRange + 2 * buffer) / 4; // Target 5 garis interval
+
+      chartMaxY = maxY + buffer;
+      chartMinY = minY - buffer;
+      if (chartMinY < 0) chartMinY = 0;
+
+      // Pembulatan interval untuk tampilan yang lebih rapi
+      if (yInterval >= 10) {
+        yInterval = (yInterval / 5).ceil() * 5.0; // Kelipatan 5
+      } else if (yInterval >= 1) {
+        yInterval = yInterval.ceilToDouble(); // Kelipatan 1
+      } else if (yInterval > 0.1) {
+        yInterval = (yInterval * 10).ceilToDouble() / 10.0; // Kelipatan 0.1
+      } else {
+        yInterval = 0.1;
+      }
+
+      // Memastikan chartMaxY dan chartMinY disesuaikan ke kelipatan yInterval
+      chartMaxY = (chartMaxY / yInterval).ceil() * yInterval;
+      chartMinY = (chartMinY / yInterval).floor() * yInterval;
+      if (chartMinY < 0) chartMinY = 0;
+    }
+
+    // Interval X axis: Mencari interval yang bagus, min 3 label
+    final double rangeX = maxX - minX;
+    // Tentukan interval agar ada sekitar 4-5 label di sumbu X
+    double xInterval = rangeX / 4.0;
+    // Minimum 1 menit (60000ms) untuk mencegah label numpuk jika data sangat dekat
+    if (xInterval < 60000) xInterval = 60000;
+
+    // 💡 Anda sudah memiliki FlDotData(show: true), jadi dot seharusnya muncul.
 
     return Container(
+      key: key,
       margin: const EdgeInsets.symmetric(vertical: 6),
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
@@ -141,102 +269,171 @@ class GensetHistoryChart extends StatelessWidget {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text(title,
-                  style: const TextStyle(color: Colors.white, fontSize: 14)),
-              Text(value,
-                  style: TextStyle(color: color, fontWeight: FontWeight.bold)),
+              Text(
+                title,
+                style: const TextStyle(color: Colors.white, fontSize: 14),
+              ),
+              Text(
+                value,
+                style: TextStyle(color: color, fontWeight: FontWeight.bold),
+              ),
             ],
           ),
           const SizedBox(height: 8),
           SizedBox(
             height: 120,
-            child: LineChart(
-              LineChartData(
-                minY: chartMinY, // Terapkan min Y yang dihitung
-                maxY: chartMaxY, // Terapkan max Y yang dihitung
-                minX: 0,
-                maxX: (spots.length - 1).toDouble(),
-
-                gridData: FlGridData(
-                  show: true, // Tampilkan grid untuk sumbu Y
-                  drawVerticalLine: false,
-                  getDrawingHorizontalLine: (value) => FlLine(
-                    color: Colors.white.withOpacity(0.1),
-                    strokeWidth: 1,
+            child: RepaintBoundary(
+              child: LineChart(
+                LineChartData(
+                  minY: chartMinY,
+                  maxY: chartMaxY,
+                  minX: minX,
+                  maxX: maxX,
+                  gridData: FlGridData(
+                    show: true,
+                    drawVerticalLine: false,
+                    getDrawingHorizontalLine: (value) => FlLine(
+                      color: Colors.white.withOpacity(0.1),
+                      strokeWidth: 1,
+                    ),
+                    // Hanya tampilkan garis di chartMinY dan setiap kelipatan yInterval
+                    checkToShowHorizontalLine: (value) {
+                      final diff = (value - chartMinY).abs();
+                      // Tampilkan garis jika itu chartMinY atau mendekati kelipatan yInterval
+                      return diff < 0.001 ||
+                          (diff / yInterval).round() * yInterval == diff;
+                    },
                   ),
-                ),
-                borderData: FlBorderData(show: false),
-                titlesData: FlTitlesData(
-                  bottomTitles: AxisTitles(
-                    sideTitles: SideTitles(
-                      showTitles: true,
-                      reservedSize: 22,
-                      interval: interval, // Gunakan interval 1.0
-                      getTitlesWidget: (value, meta) {
-                        final index = value.toInt();
+                  borderData: FlBorderData(show: false),
+                  titlesData: FlTitlesData(
+                    bottomTitles: AxisTitles(
+                      sideTitles: SideTitles(
+                        showTitles: true,
+                        reservedSize: 22,
+                        interval:
+                            xInterval, // Menggunakan interval yang diperbaiki
+                        getTitlesWidget: (value, meta) {
+                          if (spots.isEmpty) return const SizedBox.shrink();
 
-                        // Logika untuk bottomTitles (sumbu X)
-                        if (labels.length > 5 && index % ((labels.length / 4).ceil()) != 0 && index != labels.length - 1) {
+                          // Logika untuk menampilkan label di titik data yang terdekat
+                          final spot = spots.reduce(
+                            (a, b) => (a.x - value).abs() < (b.x - value).abs()
+                                ? a
+                                : b,
+                          );
+                          final index = spots.indexOf(spot);
+
+                          // Tampilkan label hanya jika nilai 'value' (dari interval FlChart)
+                          // sangat dekat dengan x-value dari salah satu data point
+                          if (index >= 0 &&
+                              index < labels.length &&
+                              (value - spot.x).abs() < xInterval * 0.2) {
+                            return SideTitleWidget(
+                              axisSide: meta.axisSide,
+                              space: 4,
+                              child: Text(
+                                labels[index],
+                                style: const TextStyle(
+                                  color: Colors.white54,
+                                  fontSize: 10,
+                                ),
+                              ),
+                            );
+                          }
+
                           return const SizedBox.shrink();
-                        }
+                        },
+                      ),
+                    ),
 
-                        if (index >= 0 && index < labels.length) {
-                          return SideTitleWidget( // Tambahkan SideTitleWidget untuk kontrol spasi
+                    leftTitles: AxisTitles(
+                      sideTitles: SideTitles(
+                        showTitles: true,
+                        reservedSize: 48,
+                        interval: yInterval,
+                        getTitlesWidget: (value, meta) {
+                          if (value < chartMinY || value > chartMaxY)
+                            return const SizedBox.shrink();
+
+                          // Tampilkan hanya di kelipatan interval, dimulai dari chartMinY
+                          final diff = (value - chartMinY).abs();
+                          if ((diff / yInterval).round() * yInterval != diff &&
+                              diff > 0.001) {
+                            return const SizedBox.shrink();
+                          }
+
+                          // Format label: 1 desimal jika lebih besar atau sama dengan 1, 2 desimal jika lebih kecil
+                          final String label = (value >= 10.0)
+                              ? value.toStringAsFixed(
+                                  0,
+                                ) // Untuk Tegangan/Frekuensi tinggi, lebih baik tanpa desimal
+                              : (value >= 1.0
+                                    ? value.toStringAsFixed(1)
+                                    : value.toStringAsFixed(2));
+
+                          return SideTitleWidget(
                             axisSide: meta.axisSide,
-                            space: 4,
+                            space: 12,
                             child: Text(
-                              labels[index],
+                              label,
+                              textAlign: TextAlign.right,
                               style: const TextStyle(
-                                  color: Colors.white54, fontSize: 10),
+                                color: Colors.white54,
+                                fontSize: 10,
+                              ),
                             ),
                           );
-                        }
-                        return const SizedBox.shrink();
-                      },
+                        },
+                      ),
+                    ),
+                    rightTitles: AxisTitles(
+                      sideTitles: SideTitles(showTitles: false),
+                    ),
+                    topTitles: AxisTitles(
+                      sideTitles: SideTitles(showTitles: false),
                     ),
                   ),
+                  lineTouchData: LineTouchData(
+                    enabled: true,
+                    touchTooltipData: LineTouchTooltipData(
+                      // tooltipBgColor: Colors.black54, // Ganti warna agar terlihat
+                      getTooltipItems: (touchedSpots) {
+                        return touchedSpots.map((LineBarSpot spot) {
+                          String unit;
+                          if (title.contains('Tegangan')) {
+                            unit = 'V';
+                          } else if (title.contains('Frekuensi')) {
+                            unit = 'Hz';
+                          } else {
+                            unit = 'A';
+                          }
 
-                  // 💡 PERUBAHAN: leftTitles (Sumbu Y)
-                  leftTitles: AxisTitles(
-                    sideTitles: SideTitles(
-                      showTitles: true, // Aktifkan label sumbu Y
-                      reservedSize: 48, // Ruang yang dicadangkan untuk label
-                      interval: yInterval, // Gunakan interval Y yang dihitung
-                      getTitlesWidget: (value, meta) {
-                        // Filter nilai yang tidak perlu (nilai di luar batas)
-                        if (value < chartMinY || value > chartMaxY) {
-                          return const SizedBox.shrink();
-                        }
-                        return SideTitleWidget(
-                          axisSide: meta.axisSide,
-                          space: 12, // Jarak dari garis Y (sumbu 0)
-                          child: Text(
-                            value.toStringAsFixed(1), // Format 1 desimal (seperti screenshot)
-                            textAlign: TextAlign.right,
-                            style: const TextStyle(
-                                color: Colors.white54,
-                                fontSize: 10
+                          return LineTooltipItem(
+                            '${spot.y.toStringAsFixed(2)} $unit', // nilai y
+                            const TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.bold,
                             ),
-                          ),
-                        );
+                          );
+                        }).toList();
                       },
                     ),
                   ),
-                  // ------------------------------------
-
-                  rightTitles:
-                  AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                  topTitles:
-                  AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                  lineBarsData: [
+                    LineChartBarData(
+                      isCurved: true,
+                      color: color,
+                      dotData: FlDotData(
+                        show: true,
+                      ), // 💡 Dot (titik) sudah aktif
+                      spots: spots,
+                      belowBarData: BarAreaData(
+                        show: true,
+                        color: color.withOpacity(0.3),
+                      ),
+                    ),
+                  ],
                 ),
-                lineBarsData: [
-                  LineChartBarData(
-                    isCurved: true,
-                    color: color,
-                    dotData: FlDotData(show: false), // Sembunyikan titik agar lebih rapi
-                    spots: spots,
-                  )
-                ],
               ),
             ),
           ),
